@@ -19,7 +19,7 @@ except ImportError:  # Local SQLite mode does not require the PostgreSQL driver.
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
 DB_PATH = DATA / "healthcare_patients.db"
-APP_VERSION = "2.1.0-postgresql"
+APP_VERSION = "2.2.0-clinician-review"
 NUMERIC = ["age_years", "glucose_mg_dl", "systolic_bp_mmhg", "diastolic_bp_mmhg", "cholesterol_mg_dl", "heart_rate_bpm"]
 BATCH_COLUMNS = ["patient_id", "age_years", "condition", "glucose_mg_dl", "systolic_bp_mmhg", "diastolic_bp_mmhg", "cholesterol_mg_dl", "heart_rate_bpm", "recorded_allergy", "family_history", "adherence_level"]
 
@@ -117,6 +117,21 @@ def initialize_database():
                 updated_at_utc TEXT NOT NULL
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS clinician_prescription_records (
+                prescription_id TEXT PRIMARY KEY,
+                patient_id TEXT NOT NULL,
+                medicine_name TEXT NOT NULL,
+                dose TEXT NOT NULL,
+                route TEXT NOT NULL,
+                frequency TEXT NOT NULL,
+                duration TEXT NOT NULL,
+                clinical_rationale TEXT NOT NULL,
+                reviewer_identifier TEXT NOT NULL,
+                verification_status TEXT NOT NULL,
+                recorded_at_utc TEXT NOT NULL
+            )
+        """)
 
 
 def patient_exists(patient_id):
@@ -156,6 +171,36 @@ def load_saved_patients():
         rows = connection.execute(
             "SELECT * FROM saved_patients ORDER BY created_at_utc DESC"
         ).fetchall()
+    return pd.DataFrame([dict(row) for row in rows])
+
+
+def save_clinician_prescription(record):
+    values = [
+        record["prescription_id"], record["patient_id"], record["medicine_name"],
+        record["dose"], record["route"], record["frequency"], record["duration"],
+        record["clinical_rationale"], record["reviewer_identifier"],
+        record["verification_status"], record["recorded_at_utc"],
+    ]
+    with database_connection() as connection:
+        connection.execute(f"""
+            INSERT INTO clinician_prescription_records (
+                prescription_id, patient_id, medicine_name, dose, route,
+                frequency, duration, clinical_rationale, reviewer_identifier,
+                verification_status, recorded_at_utc
+            ) VALUES ({sql_parameters(11)})
+        """, values)
+
+
+def load_clinician_prescriptions(patient_id=None):
+    query = "SELECT * FROM clinician_prescription_records"
+    parameters = ()
+    if patient_id:
+        marker = "%s" if uses_cloud_database() else "?"
+        query += f" WHERE patient_id = {marker}"
+        parameters = (patient_id,)
+    query += " ORDER BY recorded_at_utc DESC"
+    with database_connection() as connection:
+        rows = connection.execute(query, parameters).fetchall()
     return pd.DataFrame([dict(row) for row in rows])
 
 
@@ -299,6 +344,8 @@ pages = [
     "⚛️ Quantum & Benchmark Analysis",
     "📦 Batch Recommendation Processing",
 ]
+if role in {"Healthcare Reviewer", "Administrator"}:
+    pages.insert(3, "🧾 Clinician Prescription Record")
 if role in {"Researcher", "Administrator"}:
     pages.append("📈 Model Evaluation")
 if role == "Administrator":
@@ -477,6 +524,113 @@ elif page == "👥 Patient Records Explorer":
         st.write("**Raw model confidence:** confidence before safety and compatibility adjustments.")
         st.write("**Safety-adjusted rank:** order after removing incompatible candidates and applying review rules.")
         st.write("**Model score:** model-generated class score used for ranking; not treatment effectiveness.")
+
+elif page == "🧾 Clinician Prescription Record":
+    page_header(
+        "Clinician Medication Review and Prescription Recording",
+        "Record a qualified reviewer's independently selected medicine and regimen for a saved synthetic patient. The application does not generate or select the medicine, dose, frequency or duration.",
+    )
+    st.error(
+        "Restricted demonstration workflow: this page does not verify professional identity and must not be used for real prescribing or identifiable patient data."
+    )
+    saved = load_saved_patients()
+    if saved.empty:
+        st.info("No saved synthetic patients are available. Save a patient through Generate Recommendation first.")
+    else:
+        patient_id = st.selectbox("Select a saved synthetic patient", saved.patient_id.tolist())
+        patient = saved[saved.patient_id == patient_id].iloc[0]
+        a, b, c, d = st.columns(4)
+        a.metric("Condition", patient.condition)
+        b.metric("Safety category", patient.risk_level)
+        c.metric("Recorded allergy", patient.recorded_allergy)
+        d.metric("Research medication class", patient.top_medication_class or "Unavailable")
+        st.caption(
+            "The research medication class is contextual evidence only. It is not a medicine selection and must not determine the clinician-entered record."
+        )
+
+        with st.form("clinician_prescription"):
+            st.markdown("#### Independent clinician-entered medication decision")
+            medicine_name = st.text_input(
+                "Medicine name selected independently by the reviewer",
+                help="The system does not suggest or autocomplete medicine names.",
+            )
+            a, b = st.columns(2)
+            dose = a.text_input("Dose and unit entered by reviewer", placeholder="Clinician entry required")
+            route = b.selectbox(
+                "Route entered by reviewer",
+                ["Select route", "Oral", "Topical", "Inhaled", "Injection", "Other"],
+            )
+            a, b = st.columns(2)
+            frequency = a.text_input("Frequency entered by reviewer", placeholder="Clinician entry required")
+            duration = b.text_input("Duration entered by reviewer", placeholder="Clinician entry required")
+            clinical_rationale = st.text_area(
+                "Clinical rationale and independent review basis",
+                help="Explain the reviewer's independent reasoning and any verification performed.",
+            )
+            reviewer_identifier = st.text_input(
+                "Reviewer identifier",
+                help="Use a synthetic staff identifier for this demonstration; do not enter personal registration details.",
+            )
+            attested = st.checkbox(
+                "I attest that a qualified healthcare professional independently selected and verified this entry; it was not generated by the model."
+            )
+            prescription_submitted = st.form_submit_button(
+                "Record clinician-entered decision", type="primary"
+            )
+
+        if prescription_submitted:
+            required = {
+                "Medicine name": medicine_name,
+                "Dose": dose,
+                "Frequency": frequency,
+                "Duration": duration,
+                "Clinical rationale": clinical_rationale,
+                "Reviewer identifier": reviewer_identifier,
+            }
+            missing = [name for name, value in required.items() if not str(value).strip()]
+            if route == "Select route":
+                missing.append("Route")
+            if not attested:
+                missing.append("Professional attestation")
+            if missing:
+                st.error(f"Complete the following required fields: {', '.join(missing)}")
+            else:
+                prescription = {
+                    "prescription_id": f"RX-{uuid4().hex[:10].upper()}",
+                    "patient_id": patient_id,
+                    "medicine_name": medicine_name.strip(),
+                    "dose": dose.strip(),
+                    "route": route,
+                    "frequency": frequency.strip(),
+                    "duration": duration.strip(),
+                    "clinical_rationale": clinical_rationale.strip(),
+                    "reviewer_identifier": reviewer_identifier.strip(),
+                    "verification_status": "Clinician-entered and independently attested",
+                    "recorded_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                }
+                save_clinician_prescription(prescription)
+                log(
+                    "clinician_prescription_recorded",
+                    prescription_id=prescription["prescription_id"],
+                    patient_id=patient_id,
+                    reviewer_identifier=prescription["reviewer_identifier"],
+                )
+                st.success(
+                    f"Clinician-entered record {prescription['prescription_id']} was stored successfully."
+                )
+
+        history = load_clinician_prescriptions(patient_id)
+        st.markdown("#### Prescription-record history for this synthetic patient")
+        if history.empty:
+            st.info("No clinician-entered prescription records exist for this patient.")
+        else:
+            st.dataframe(history, hide_index=True, use_container_width=True)
+            st.download_button(
+                "Download clinician-entered history",
+                history.to_csv(index=False),
+                f"{patient_id}_clinician_prescription_history.csv",
+                "text/csv",
+            )
 
 elif page == "💊 Medication Class Comparison":
     page_header("Medication Class Comparison", "Compare descriptive synthetic patient characteristics associated with two historical medication classes.")

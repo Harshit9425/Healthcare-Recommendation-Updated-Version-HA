@@ -1,12 +1,14 @@
 # Personalized Healthcare QML Dashboard
 
-Application version: **2.1.0-postgresql**
+Application version: **2.2.0-clinician-review**
 
 A Streamlit deployment of the personalized healthcare and medicine recommendation research prototype.
 
 ## Included functionality
 
 - Interactive synthetic patient form with validation and SQLite storage
+- Restricted clinician medication review and prescription-recording workflow
+- Independent-review attestation and timestamped prescription audit history
 - Top-three disease-compatible medication-class ranking
 - Rule-based risk and professional-review layer
 - Similar synthetic patient profiles and explanations
@@ -19,6 +21,9 @@ A Streamlit deployment of the personalized healthcare and medicine recommendatio
 
 New-patient results are a similarity-based demonstration over synthetic,
 precomputed profiles. They are not live QML inference or clinical advice.
+The application never generates a medicine name, dose, frequency or duration.
+Those fields can only be entered manually through the demonstration clinician
+review workflow.
 
 ## Run locally
 

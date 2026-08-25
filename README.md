@@ -1,6 +1,6 @@
 # Personalized Healthcare QML Dashboard
 
-Application version: **2.2.0-clinician-review**
+Application version: **2.3.0-patient-portal**
 
 A Streamlit deployment of the personalized healthcare and medicine recommendation research prototype.
 
@@ -9,6 +9,12 @@ A Streamlit deployment of the personalized healthcare and medicine recommendatio
 - Interactive synthetic patient form with validation and SQLite storage
 - Restricted clinician medication review and prescription-recording workflow
 - Independent-review attestation and timestamped prescription audit history
+- Patient demonstration role and plain-language saved-profile summary
+- Condition education and educational medication-class information
+- Condition-matched synthetic percentile comparison
+- Interactive professional-visit preparation checklist and questions
+- Downloadable patient visit-preparation PDF
+- Persistent usability feedback and administrator feedback monitoring
 - Top-three disease-compatible medication-class ranking
 - Rule-based risk and professional-review layer
 - Similar synthetic patient profiles and explanations

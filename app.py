@@ -19,9 +19,36 @@ except ImportError:  # Local SQLite mode does not require the PostgreSQL driver.
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
 DB_PATH = DATA / "healthcare_patients.db"
-APP_VERSION = "2.2.0-clinician-review"
+APP_VERSION = "2.3.0-patient-portal"
 NUMERIC = ["age_years", "glucose_mg_dl", "systolic_bp_mmhg", "diastolic_bp_mmhg", "cholesterol_mg_dl", "heart_rate_bpm"]
 BATCH_COLUMNS = ["patient_id", "age_years", "condition", "glucose_mg_dl", "systolic_bp_mmhg", "diastolic_bp_mmhg", "cholesterol_mg_dl", "heart_rate_bpm", "recorded_allergy", "family_history", "adherence_level"]
+
+CONDITION_EDUCATION = {
+    "Acid Reflux": {
+        "overview": "A condition involving recurring movement of stomach contents toward the oesophagus. Symptom patterns, triggers and treatment response should be reviewed professionally.",
+        "topics": ["Symptom timing and possible triggers", "Current medicines and supplements", "Sleep and meal patterns", "When symptoms require urgent assessment"],
+    },
+    "Asthma": {
+        "overview": "A long-term airway condition with variable symptoms. A qualified professional should review symptom control, triggers and the patient's action plan.",
+        "topics": ["Recent symptoms and activity limitations", "Known environmental triggers", "Inhaler technique review", "Written action and emergency plans"],
+    },
+    "High Cholesterol": {
+        "overview": "A lipid-related condition assessed alongside overall cardiovascular risk. Laboratory results and treatment decisions require professional interpretation.",
+        "topics": ["Recent laboratory results", "Cardiovascular risk factors", "Current medicines and supplements", "Monitoring and follow-up plan"],
+    },
+    "Hypertension": {
+        "overview": "Persistently elevated blood pressure requires properly obtained measurements and professional assessment over time.",
+        "topics": ["Home measurement technique and log", "Current medicines and adherence", "Symptoms and other health conditions", "Monitoring and follow-up plan"],
+    },
+    "Seasonal Allergy": {
+        "overview": "A recurring allergic response associated with environmental exposure. Symptoms, triggers and recorded allergies should be reviewed before medicine decisions.",
+        "topics": ["Seasonal timing and suspected triggers", "Symptom severity and daily impact", "Previous responses or side effects", "Recorded allergies and other medicines"],
+    },
+    "Type 2 Diabetes": {
+        "overview": "A metabolic condition requiring ongoing monitoring and an individualized professional care plan.",
+        "topics": ["Recent glucose records and laboratory results", "Current medicines and adherence", "Nutrition and activity discussion", "Monitoring and follow-up plan"],
+    },
+}
 
 st.set_page_config(page_title="Healthcare QML", page_icon="🧬", layout="wide")
 
@@ -132,6 +159,16 @@ def initialize_database():
                 recorded_at_utc TEXT NOT NULL
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS user_feedback (
+                feedback_id TEXT PRIMARY KEY,
+                patient_id TEXT,
+                category TEXT NOT NULL,
+                rating INTEGER NOT NULL,
+                comments TEXT NOT NULL,
+                recorded_at_utc TEXT NOT NULL
+            )
+        """)
 
 
 def patient_exists(patient_id):
@@ -202,6 +239,55 @@ def load_clinician_prescriptions(patient_id=None):
     with database_connection() as connection:
         rows = connection.execute(query, parameters).fetchall()
     return pd.DataFrame([dict(row) for row in rows])
+
+
+def save_feedback(record):
+    values = [
+        record["feedback_id"], record["patient_id"], record["category"],
+        record["rating"], record["comments"], record["recorded_at_utc"],
+    ]
+    with database_connection() as connection:
+        connection.execute(f"""
+            INSERT INTO user_feedback (
+                feedback_id, patient_id, category, rating, comments, recorded_at_utc
+            ) VALUES ({sql_parameters(6)})
+        """, values)
+
+
+def load_user_feedback():
+    with database_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM user_feedback ORDER BY recorded_at_utc DESC"
+        ).fetchall()
+    return pd.DataFrame([dict(row) for row in rows])
+
+
+def patient_summary_pdf(patient, education, percentiles):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table
+    stream = BytesIO(); styles = getSampleStyleSheet(); story = []
+    story += [
+        Paragraph("Synthetic Patient Visit-Preparation Summary", styles["Title"]),
+        Paragraph("Research demonstration only — not a diagnosis, recommendation or prescription.", styles["Italic"]),
+        Spacer(1, 10),
+        Paragraph("Saved profile", styles["Heading2"]),
+        Table([
+            ["Patient ID", str(patient.patient_id)], ["Condition", str(patient.condition)],
+            ["Safety category", str(patient.risk_level)], ["Recorded allergy", str(patient.recorded_allergy)],
+            ["Research medication class", str(patient.top_medication_class or "Unavailable")],
+        ]),
+        Spacer(1, 10), Paragraph("Condition education", styles["Heading2"]),
+        Paragraph(education["overview"], styles["BodyText"]),
+        Spacer(1, 8), Paragraph("Topics to discuss with a qualified professional", styles["Heading2"]),
+    ]
+    for topic in education["topics"]:
+        story.append(Paragraph(f"• {topic}", styles["BodyText"]))
+    story += [Spacer(1, 8), Paragraph("Synthetic cohort comparison", styles["Heading2"])]
+    story.append(Table([["Measurement", "Synthetic percentile"], *[[k, f"{v:.0f}%"] for k, v in percentiles.items()]]))
+    story += [Spacer(1, 12), Paragraph("A percentile describes position within condition-matched synthetic records. It is not a medical reference range or clinical interpretation.", styles["BodyText"])]
+    SimpleDocTemplate(stream, pagesize=A4).build(story)
+    return stream.getvalue()
 
 
 def pct(x):
@@ -332,24 +418,32 @@ st.sidebar.markdown(
 st.sidebar.caption("Personalized medication-class research platform")
 role = st.sidebar.selectbox(
     "Select demonstration role",
-    ["Researcher", "Healthcare Reviewer", "Administrator"],
+    ["Patient (Synthetic Demo)", "Researcher", "Healthcare Reviewer", "Administrator"],
     help="The selected role changes which analytical and administrative pages are visible. This is a demonstration, not secure authentication.",
 )
-pages = [
-    "🏠 Executive Overview",
-    "🩺 Generate Recommendation",
-    "👥 Patient Records Explorer",
-    "💊 Medication Class Comparison",
-    "🛡️ Safety & Reliability",
-    "⚛️ Quantum & Benchmark Analysis",
-    "📦 Batch Recommendation Processing",
-]
-if role in {"Healthcare Reviewer", "Administrator"}:
-    pages.insert(3, "🧾 Clinician Prescription Record")
-if role in {"Researcher", "Administrator"}:
-    pages.append("📈 Model Evaluation")
-if role == "Administrator":
-    pages += ["📡 Operational Monitoring", "✅ System Validation & Dictionary"]
+if role == "Patient (Synthetic Demo)":
+    pages = [
+        "🏠 Executive Overview",
+        "🩺 Generate Recommendation",
+        "🙋 Patient Health Summary",
+    ]
+else:
+    pages = [
+        "🏠 Executive Overview",
+        "🩺 Generate Recommendation",
+        "👥 Patient Records Explorer",
+        "💊 Medication Class Comparison",
+        "🛡️ Safety & Reliability",
+        "⚛️ Quantum & Benchmark Analysis",
+        "📦 Batch Recommendation Processing",
+    ]
+    if role in {"Healthcare Reviewer", "Administrator"}:
+        pages.insert(3, "🧾 Clinician Prescription Record")
+        pages.insert(4, "🙋 Patient Health Summary")
+    if role in {"Researcher", "Administrator"}:
+        pages.append("📈 Model Evaluation")
+    if role == "Administrator":
+        pages += ["📡 Operational Monitoring", "✅ System Validation & Dictionary"]
 page = st.sidebar.radio("Dashboard sections", pages)
 st.sidebar.markdown("---")
 st.sidebar.caption("Synthetic data · Research use only · Professional review required")
@@ -372,6 +466,10 @@ if page == "🏠 Executive Overview":
     cols[2].metric("Supported conditions", data["patients"].condition.nunique(), help="Distinct condition labels represented in the synthetic dataset.")
     cols[3].metric("Medication classes", data["ranked"].recommended_medication_class.nunique(), help="Historical medication categories predicted by the research models—not individual drug prescriptions.")
     cols[4].metric("Integration checks passed", f"{(data['checks'].status == 'PASS').sum()}/{len(data['checks'])}", help="Automated checks covering required files, feature compatibility and output integrity.")
+    st.caption(
+        f"Persistent clinician-entered records: {len(load_clinician_prescriptions())} · "
+        f"Stored dashboard feedback entries: {len(load_user_feedback())}"
+    )
 
     st.markdown("### What this system does")
     section_note(
@@ -524,6 +622,128 @@ elif page == "👥 Patient Records Explorer":
         st.write("**Raw model confidence:** confidence before safety and compatibility adjustments.")
         st.write("**Safety-adjusted rank:** order after removing incompatible candidates and applying review rules.")
         st.write("**Model score:** model-generated class score used for ranking; not treatment effectiveness.")
+
+elif page == "🙋 Patient Health Summary":
+    page_header(
+        "Patient Health Summary and Visit Preparation",
+        "Understand a saved synthetic profile in plain language, prepare questions for a professional visit and download a research summary.",
+    )
+    st.warning(
+        "Demonstration access only: role selection is not authentication. Use synthetic records only. This page does not diagnose, prescribe or replace professional care."
+    )
+    saved = load_saved_patients()
+    if saved.empty:
+        st.info("No saved synthetic profiles are available. Use Generate Recommendation to create one first.")
+    else:
+        patient_id = st.selectbox("Select a saved synthetic patient profile", saved.patient_id.tolist())
+        patient = saved[saved.patient_id == patient_id].iloc[0]
+        education = CONDITION_EDUCATION.get(
+            patient.condition,
+            {"overview": "Discuss this recorded condition with a qualified healthcare professional.", "topics": ["Symptoms and history", "Current medicines", "Allergies", "Monitoring plan"]},
+        )
+
+        st.markdown("### Profile at a glance")
+        cols = st.columns(4)
+        cols[0].metric("Recorded condition", patient.condition)
+        cols[1].metric("Safety-review category", patient.risk_level)
+        cols[2].metric("Recorded allergy", patient.recorded_allergy)
+        cols[3].metric("Historical adherence", patient.adherence_level)
+        st.caption("The safety-review category is a rule-based research flag—not a diagnosis or severity classification.")
+
+        st.markdown("### Plain-language condition information")
+        section_note(education["overview"])
+        a, b = st.columns(2)
+        with a:
+            st.markdown("#### Topics to discuss with a professional")
+            for topic in education["topics"]:
+                st.write(f"- {topic}")
+        with b:
+            st.markdown("#### Medication-class research context")
+            allowed = data["disease_map"]
+            allowed = allowed[(allowed.disease == patient.condition) & allowed.disease_compatible.astype(bool)]
+            classes = sorted(allowed.recommended_medication_class.dropna().unique())
+            if classes:
+                for class_name in classes:
+                    st.write(f"- {class_name}")
+            else:
+                st.write("No compatible research classes are available.")
+            st.caption("These are synthetic historical classes for education—not named medicines, recommendations or prescriptions.")
+
+        st.markdown("### Comparison with condition-matched synthetic profiles")
+        cohort = data["risk"][data["risk"].condition == patient.condition]
+        percentiles = {
+            field.replace("_", " ").title(): float((cohort[field].astype(float) <= float(patient[field])).mean() * 100)
+            for field in NUMERIC
+        }
+        comparison = pd.DataFrame(
+            {"Measurement": list(percentiles.keys()), "Synthetic percentile": list(percentiles.values())}
+        ).set_index("Measurement")
+        st.bar_chart(comparison, horizontal=True)
+        st.caption("Percentiles show position within matching synthetic records. They do not indicate normal, abnormal, safe or unsafe values.")
+
+        st.markdown("### Visit-preparation checklist")
+        checklist = [
+            "Prepare a current medicine and supplement list",
+            "Prepare known allergy and previous reaction information",
+            "Bring relevant measurement or symptom records",
+            "Write down changes noticed since the previous review",
+            "Ask how benefits, risks and follow-up will be monitored",
+        ]
+        completed = 0
+        for index, item in enumerate(checklist):
+            completed += int(st.checkbox(item, key=f"visit_{patient_id}_{index}"))
+        st.progress(completed / len(checklist), text=f"Visit preparation: {completed}/{len(checklist)} items completed")
+
+        st.markdown("### Questions to ask the qualified reviewer")
+        questions = [
+            "What information supports the proposed treatment decision?",
+            "How were my recorded allergies and other medicines considered?",
+            "What benefits, risks or warning signs should be discussed?",
+            "What monitoring and follow-up are appropriate?",
+            "What should I do if I have concerns or experience an unexpected reaction?",
+        ]
+        for question in questions:
+            st.write(f"- {question}")
+
+        history = load_clinician_prescriptions(patient_id)
+        st.markdown("### Clinician-entered record status")
+        if history.empty:
+            st.info("No clinician-entered medication record has been stored for this synthetic patient.")
+        else:
+            latest = history.iloc[0]
+            cols = st.columns(3)
+            cols[0].metric("Record ID", latest.prescription_id)
+            cols[1].metric("Verification status", latest.verification_status)
+            cols[2].metric("Recorded at (UTC)", latest.recorded_at_utc)
+            st.caption("Medicine and regimen details were entered manually by the reviewer; they were not generated by the model.")
+
+        st.download_button(
+            "Download patient visit-preparation PDF",
+            patient_summary_pdf(patient, education, percentiles),
+            f"{patient_id}_visit_preparation.pdf",
+            "application/pdf",
+        )
+
+        with st.expander("Share dashboard feedback"):
+            with st.form("patient_feedback"):
+                category = st.selectbox("Feedback category", ["Usability", "Clarity", "Accessibility", "Feature request", "Other"])
+                rating = st.slider("Dashboard rating", 1, 5, 4)
+                comments = st.text_area("Comments", help="Do not include identifiable patient or medical information.")
+                feedback_submitted = st.form_submit_button("Submit feedback")
+            if feedback_submitted:
+                if not comments.strip():
+                    st.error("Enter a comment before submitting feedback.")
+                else:
+                    save_feedback({
+                        "feedback_id": f"FB-{uuid4().hex[:10].upper()}",
+                        "patient_id": patient_id,
+                        "category": category,
+                        "rating": int(rating),
+                        "comments": comments.strip(),
+                        "recorded_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    })
+                    log("patient_feedback_submitted", patient_id=patient_id, category=category, rating=int(rating))
+                    st.success("Thank you. Your dashboard feedback was stored successfully.")
 
 elif page == "🧾 Clinician Prescription Record":
     page_header(
@@ -728,19 +948,28 @@ elif page == "📈 Model Evaluation":
     st.info("The hybrid model leads the final QML comparison, while the RBF SVM remains the strongest overall independent benchmark.")
 
 elif page == "📡 Operational Monitoring":
-    page_header("Operational Monitoring and Session Audit", "Track recommendation and batch-processing actions generated during the current browser session and export the audit table.")
+    page_header("Operational Monitoring and Feedback", "Track current-session actions and review persistent dashboard feedback and clinician-entered record counts.")
     audit = pd.DataFrame(st.session_state.audit)
-    cols = st.columns(3)
+    feedback = load_user_feedback()
+    prescription_records = load_clinician_prescriptions()
+    cols = st.columns(4)
     cols[0].metric("Session events", len(audit))
     recommendation_events = {"recommendation_generated", "patient_saved_and_recommendation_generated"}
     cols[1].metric("Recommendations generated", 0 if audit.empty else audit.event.isin(recommendation_events).sum())
-    cols[2].metric("Batch jobs processed", 0 if audit.empty else (audit.event == "batch_processed").sum())
+    cols[2].metric("Clinician-entered records", len(prescription_records))
+    cols[3].metric("Feedback entries", len(feedback))
     if audit.empty:
         st.info("No recommendation or batch-processing events have been recorded in this session.")
     else:
         st.dataframe(audit, hide_index=True, use_container_width=True)
         st.download_button("Download current session audit CSV", audit.to_csv(index=False), "session_audit_log.csv", "text/csv")
     st.caption("This demonstration audit is stored in session memory only and resets when the session ends.")
+    st.markdown("#### Persistent dashboard feedback")
+    if feedback.empty:
+        st.info("No dashboard feedback has been submitted.")
+    else:
+        st.dataframe(feedback, hide_index=True, use_container_width=True)
+        st.download_button("Download feedback CSV", feedback.to_csv(index=False), "dashboard_feedback.csv", "text/csv")
 
 else:
     page_header("System Validation and Technical Data Dictionary", "Confirm end-to-end integration health and understand the system-level metrics used by the deployed research dashboard.")
